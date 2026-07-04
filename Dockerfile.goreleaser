@@ -1,5 +1,8 @@
 FROM gcr.io/distroless/static-debian12:nonroot
 
-COPY vault-plugin-secrets-cloudflare /usr/local/bin/vault-plugin-secrets-cloudflare
+ARG TARGETOS
+ARG TARGETARCH
+
+COPY ${TARGETOS}/${TARGETARCH}/vault-plugin-secrets-cloudflare /usr/local/bin/vault-plugin-secrets-cloudflare
 
 ENTRYPOINT ["/usr/local/bin/vault-plugin-secrets-cloudflare"]

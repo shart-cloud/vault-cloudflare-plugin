@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -152,5 +153,38 @@ func TestSyncDeleteDeletesCloudflareEntriesAndState(t *testing.T) {
 	}
 	if state != nil {
 		t.Fatalf("expected sync state removal, got %#v", state)
+	}
+}
+
+func TestFailedSyncStatePreservesPartialProgressAndLastSuccess(t *testing.T) {
+	previous := &syncState{LastSuccessAt: "2026-07-04T12:00:00Z"}
+	rule := &syncRule{Name: "api", VaultMount: "kv", VaultPath: "apps/api", VaultField: "value"}
+	plan := &syncPlan{
+		SourceSHA256: "hash-new",
+		VaultVersion: 2,
+		Secrets:      []plannedSecret{{Name: "API_SECRET", Parts: 1}},
+	}
+	state := failedSyncState(
+		"2026-07-04T13:00:00Z",
+		errors.New("cloudflare write failed"),
+		rule,
+		"acct-1",
+		"store-1",
+		plan,
+		map[string]string{"API_SECRET": "id-new", "OLD_SECRET": "id-old"},
+		previous,
+	)
+
+	if state.LastSuccessAt != previous.LastSuccessAt {
+		t.Fatalf("last_success_at = %q", state.LastSuccessAt)
+	}
+	if state.LastError != "cloudflare write failed" {
+		t.Fatalf("last_error = %q", state.LastError)
+	}
+	if state.CloudflareNamesToID["API_SECRET"] != "id-new" || state.CloudflareNamesToID["OLD_SECRET"] != "id-old" {
+		t.Fatalf("cloudflare names = %#v", state.CloudflareNamesToID)
+	}
+	if state.VaultVersion != 2 || state.SourceSHA256 != "hash-new" {
+		t.Fatalf("state = %#v", state)
 	}
 }

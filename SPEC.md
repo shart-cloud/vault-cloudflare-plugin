@@ -146,6 +146,7 @@ Fields:
 - `vault_path` string, required. Example: `apps/api/prod/stripe`.
 - `vault_field` string, optional. If omitted, the whole data object is serialized as JSON.
 - `cloudflare_name` string, required. Base Cloudflare secret name.
+- `binding_name` string, optional. Worker binding name prefix returned by `sync/bindings/{name}`. If omitted, the plugin derives one from the final Cloudflare secret base name.
 - `account_id` string, optional. Falls back to `config/cloudflare`.
 - `secrets_store_id` string, optional. Falls back to `config/cloudflare`.
 - `scopes` array of strings, optional. Defaults to `config/sync.default_scopes`.
@@ -226,6 +227,38 @@ State fields:
 - `last_sha256`
 - `cloudflare_secret_ids`
 - `cloudflare_names`
+
+#### `sync/bindings/{rule_name}`
+
+Reads Terraform-friendly Worker Secrets Store binding metadata for one explicit sync rule.
+
+This endpoint reads the current Vault KV v2 source and builds the same sync plan as `sync/run/{rule_name}`, but it does not write Cloudflare and does not return secret values.
+
+Response fields:
+
+- `rule_name`
+- `vault_path`
+- `vault_version`
+- `account_id`
+- `store_id`
+- `binding_name`
+- `cloudflare_names`
+- `bindings`
+- `bindings_json`
+- `sha256`
+
+Each binding object uses the Cloudflare Terraform Worker binding shape:
+
+```json
+{
+  "name": "JWT_PRIVATE_KEY",
+  "type": "secrets_store_secret",
+  "store_id": "<store_id>",
+  "secret_name": "JWT_PRIVATE_KEY"
+}
+```
+
+For chunked secrets, bindings are returned for metadata and each current part: `{BINDING}_META`, `{BINDING}_PART_001`, `{BINDING}_PART_002`, and so on.
 
 #### `sync/delete/{rule_name}`
 
@@ -333,7 +366,7 @@ Cloudflare Secrets Store does not provide multi-secret transactions. The plugin 
 
 ### Worker Binding Implications
 
-Cloudflare Workers require explicit Secrets Store bindings. If a secret may use up to three parts, deployments should bind all expected names:
+Cloudflare Workers require explicit Secrets Store bindings. Terraform should read `sync/bindings/{rule_name}` and pass `bindings_json` into the Cloudflare Worker resource. If a secret is chunked, deployments should bind all returned names:
 
 ```toml
 [[secrets_store_secrets]]
@@ -357,7 +390,7 @@ store_id = "<STORE_ID>"
 secret_name = "JWT_PRIVATE_KEY__PART_003"
 ```
 
-The plugin may later generate binding snippets, but automatic Worker deployment is not part of the MVP.
+The plugin generates binding metadata but does not update Worker deployments directly; Terraform remains the Worker owner.
 
 ## API Token Creator
 
@@ -436,8 +469,6 @@ PUT /accounts/{account_id}/tokens/{token_id}
 
 Renewal must never exceed the role's `max_ttl`.
 
-MVP recommendation: keep token leases non-renewable and issue replacement tokens instead.
-
 ### Roll Token Value
 
 Path:
@@ -453,6 +484,39 @@ PUT /accounts/{account_id}/tokens/{token_id}/value
 ```
 
 This returns a new token value once. This should be restricted to administrators.
+
+### Static Tokens
+
+Path:
+
+```text
+token/static/{name}
+```
+
+The plugin can either store an existing Cloudflare API token value or create an account-owned Cloudflare API token once from an existing role and persist the returned value for stable retrieval.
+
+Write fields:
+
+- `token` string, sensitive, optional. Existing token value to store.
+- `role` string, optional. Token role used to create a Cloudflare account token once. Mutually exclusive with `token`.
+- `display_name` string, optional. Used with `role`.
+- `ttl` duration, optional. Used with `role`, capped by role `max_ttl`.
+- `account_id` string, optional metadata for externally supplied tokens.
+- `token_id` string, optional metadata for externally supplied tokens.
+- `expires_on` string, optional metadata for externally supplied tokens.
+- `delete_cloudflare_token_on_delete` boolean, optional. If true and account/token IDs are known, deleting the static entry also deletes the Cloudflare token.
+
+Read fields:
+
+- `name`
+- `token`
+- `account_id`
+- `token_id`
+- `role`
+- `managed`
+- `created_at`
+- `expires_on`
+- `delete_cloudflare_token_on_delete`
 
 ### Permission Group Discovery
 
@@ -515,11 +579,22 @@ Fields:
 - `role_name`
 - `account_id`
 - `token_id`
+- `token_name`
 - `issued_at`
 - `expires_on`
 - `lease_id`
 
 The token value must not be stored outside Vault's normal response and audit redaction paths.
+
+### Static Token State
+
+Static token entries are stored under:
+
+```text
+token/static/{name}
+```
+
+Unlike dynamic lease state, static token entries intentionally store the token value so callers can retrieve the same credential repeatedly. Access to `token/static/*` must therefore be restricted with Vault ACLs.
 
 ## Security Requirements
 
@@ -577,6 +652,7 @@ Reports:
 - Active tokens with no Vault lease.
 - Expired tokens still present in Cloudflare.
 - Vault leases whose Cloudflare token is missing.
+- Static token entries whose Cloudflare token is missing.
 
 Optional fields:
 
@@ -593,20 +669,22 @@ The first implementation should include:
 - `sync/run/{rule_name}`
 - `sync/run`
 - `sync/status/{rule_name}`
+- Terraform binding metadata under `sync/bindings/{rule_name}`
 - Create-or-patch Cloudflare Secrets Store entries
 - Chunking with `__META` and `__PART_NNN`
 - Account token roles under `token/roles/{name}`
 - `token/creds/{role_name}` with Vault leases
+- Lease renewal for roles with `renewable=true`
 - Lease revocation that deletes Cloudflare account tokens
+- Token value rolling under `token/roll/{token_id}`
+- Static API token storage under `token/static/{name}`
 - Permission group discovery
 - Token reconciliation under `token/reconcile`
 
 Defer until after MVP:
 
 - KV metadata discovery scans.
-- Worker binding generation.
 - Automatic Worker deployment updates.
-- Token lease renewal.
 - Cloudflare user-owned token creation.
 - Root credential rotation automation.
 
@@ -618,6 +696,7 @@ Defer until after MVP:
   "vault_path": "apps/api/prod/jwt_private_key",
   "vault_field": "value",
   "cloudflare_name": "JWT_PRIVATE_KEY",
+  "binding_name": "JWT_PRIVATE_KEY",
   "scopes": ["workers"],
   "split": true,
   "chunk_size_bytes": 48000,

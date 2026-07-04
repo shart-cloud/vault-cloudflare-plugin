@@ -20,6 +20,7 @@ func TestSyncRuleWriteReadListDelete(t *testing.T) {
 			"vault_path":      "apps/api/prod/jwt",
 			"vault_field":     "value",
 			"cloudflare_name": "JWT_PRIVATE_KEY",
+			"binding_name":    "JWT_KEY",
 			"scopes":          []string{"workers"},
 			"split":           "true",
 			"encoding":        "base64",
@@ -46,6 +47,9 @@ func TestSyncRuleWriteReadListDelete(t *testing.T) {
 	}
 	if got := resp.Data["split"]; got != "true" {
 		t.Fatalf("split = %#v, want true", got)
+	}
+	if got := resp.Data["binding_name"]; got != "JWT_KEY" {
+		t.Fatalf("binding_name = %#v, want JWT_KEY", got)
 	}
 
 	resp, err = b.HandleRequest(ctx, &logical.Request{
@@ -101,5 +105,23 @@ func TestSyncRuleValidation(t *testing.T) {
 	}
 	if resp == nil || !resp.IsError() {
 		t.Fatalf("expected validation error, got %#v", resp)
+	}
+
+	resp, err = b.HandleRequest(context.Background(), &logical.Request{
+		Operation: logical.UpdateOperation,
+		Path:      "sync/rules/bad-binding",
+		Storage:   storage,
+		Data: map[string]interface{}{
+			"vault_mount":     "kv",
+			"vault_path":      "apps/api/prod/jwt",
+			"cloudflare_name": "JWT_PRIVATE_KEY",
+			"binding_name":    "1_BAD",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp == nil || !resp.IsError() {
+		t.Fatalf("expected binding validation error, got %#v", resp)
 	}
 }

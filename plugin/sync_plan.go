@@ -66,7 +66,7 @@ func buildSyncPlan(rule *syncRule, syncCfg *syncConfig, source sourceSecret) (*s
 	if len(scopes) == 0 {
 		scopes = syncCfg.DefaultScopes
 	}
-	baseName := syncCfg.NamePrefix + rule.CloudflareName + syncCfg.NameSuffix
+	baseName := syncRuleCloudflareBaseName(rule, syncCfg)
 
 	hash := sha256.Sum256(source.Payload)
 	sha := hex.EncodeToString(hash[:])
@@ -180,4 +180,11 @@ func splitString(value string, size int) []string {
 
 func syncComment(prefix string, rule *syncRule, version int, sha, part string) string {
 	return fmt.Sprintf("%s rule=%s vault=%s/%s version=%d sha256=%s part=%s", prefix, rule.Name, rule.VaultMount, rule.VaultPath, version, sha, part)
+}
+
+func syncRuleCloudflareBaseName(rule *syncRule, syncCfg *syncConfig) string {
+	if syncCfg == nil {
+		syncCfg = defaultSyncConfig()
+	}
+	return syncCfg.NamePrefix + rule.CloudflareName + syncCfg.NameSuffix
 }

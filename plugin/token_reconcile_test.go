@@ -22,6 +22,7 @@ func TestTokenReconcileReportsDrift(t *testing.T) {
 		}
 		writeJSON(t, w, cloudflareEnvelope[[]cloudflareAPIToken]{Success: true, Result: []cloudflareAPIToken{
 			{ID: "tok-present", Name: "vault-worker-read-ci-1", ExpiresOn: now.Add(time.Hour).Format(time.RFC3339)},
+			{ID: "tok-static", Name: "vault-worker-read-static-1", ExpiresOn: now.Add(time.Hour).Format(time.RFC3339)},
 			{ID: "tok-orphan", Name: "vault-worker-read-orphan-1", ExpiresOn: now.Add(time.Hour).Format(time.RFC3339)},
 			{ID: "tok-expired", Name: "vault-worker-read-old-1", ExpiresOn: now.Add(-time.Hour).Format(time.RFC3339)},
 			{ID: "tok-human", Name: "human-token", ExpiresOn: now.Add(time.Hour).Format(time.RFC3339)},
@@ -37,6 +38,13 @@ func TestTokenReconcileReportsDrift(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := writeTokenState(ctx, storage, "tok-missing", &tokenState{RoleName: "worker-read", AccountID: "acct-1", TokenID: "tok-missing"}); err != nil {
+		t.Fatal(err)
+	}
+	staticEntry, err := logical.StorageEntryJSON(staticTokenStoragePath("ci"), &staticToken{Name: "ci", AccountID: "acct-1", TokenID: "tok-static", Token: "value", Managed: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.Put(ctx, staticEntry); err != nil {
 		t.Fatal(err)
 	}
 
@@ -139,8 +147,11 @@ func TestTokenReconcileAccountIDsIncludesRoleOverrides(t *testing.T) {
 			{AccountID: "acct-role"},
 			{AccountID: "acct-default"},
 		},
+		map[string]*staticToken{
+			"tok-static": {AccountID: "acct-static", TokenID: "tok-static"},
+		},
 	)
-	want := []string{"acct-default", "acct-role", "acct-state"}
+	want := []string{"acct-default", "acct-role", "acct-state", "acct-static"}
 	if len(ids) != len(want) {
 		t.Fatalf("ids = %#v, want %#v", ids, want)
 	}

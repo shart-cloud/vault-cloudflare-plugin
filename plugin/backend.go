@@ -29,6 +29,7 @@ func Backend() *cloudflareBackend {
 		PathsSpecial: &logical.Paths{
 			SealWrapStorage: []string{
 				"config/cloudflare",
+				"token/static/",
 			},
 		},
 	}
@@ -38,6 +39,7 @@ func Backend() *cloudflareBackend {
 		b.pathConfigSync(),
 		b.pathSyncRulesList(),
 		b.pathSyncRules(),
+		b.pathSyncBindings(),
 		b.pathSyncRunAll(),
 		b.pathSyncRunRule(),
 		b.pathSyncStatus(),
@@ -47,6 +49,9 @@ func Backend() *cloudflareBackend {
 		b.pathTokenRoles(),
 		b.pathTokenPermissionGroups(),
 		b.pathTokenCreds(),
+		b.pathTokenRoll(),
+		b.pathStaticTokensList(),
+		b.pathStaticTokens(),
 		b.pathTokenReconcile(),
 	}
 	b.Secrets = []*framework.Secret{

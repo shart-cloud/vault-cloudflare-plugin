@@ -247,12 +247,18 @@ func (b *cloudflareBackend) runSyncRule(ctx context.Context, req *logical.Reques
 	updated := []string{}
 	deleted := []string{}
 	namesToIDs := map[string]string{}
+	partialNamesToIDs := map[string]string{}
+	if state != nil {
+		for name, id := range state.CloudflareNamesToID {
+			partialNamesToIDs[name] = id
+		}
+	}
 	parts, metadata := splitPlannedSecrets(plan)
 	for _, pass := range [][]plannedSecret{parts, metadata} {
 		for _, desired := range pass {
 			createdName, updatedName, id, err := upsertPlannedSecret(ctx, client, accountID, storeID, remoteByName, desired)
 			if err != nil {
-				_ = writeSyncState(ctx, req.Storage, ruleName, &syncState{LastRunAt: now, LastError: err.Error(), VaultMount: rule.VaultMount, VaultPath: rule.VaultPath, VaultField: rule.VaultField})
+				_ = writeSyncState(ctx, req.Storage, ruleName, failedSyncState(now, err, rule, accountID, storeID, plan, partialNamesToIDs, state))
 				return nil, err
 			}
 			if createdName != "" {
@@ -262,12 +268,13 @@ func (b *cloudflareBackend) runSyncRule(ctx context.Context, req *logical.Reques
 				updated = append(updated, updatedName)
 			}
 			namesToIDs[desired.Name] = id
+			partialNamesToIDs[desired.Name] = id
 		}
 	}
 	if syncCfg.DeleteRemovedParts && state != nil {
 		deleted, err = deleteStaleRecordedSecrets(ctx, client, accountID, storeID, state.CloudflareNamesToID, namesToIDs)
 		if err != nil {
-			_ = writeSyncState(ctx, req.Storage, ruleName, &syncState{LastRunAt: now, LastError: err.Error(), VaultMount: rule.VaultMount, VaultPath: rule.VaultPath, VaultField: rule.VaultField})
+			_ = writeSyncState(ctx, req.Storage, ruleName, failedSyncState(now, err, rule, accountID, storeID, plan, namesToIDs, state))
 			return nil, err
 		}
 	}
@@ -309,6 +316,29 @@ func upsertPlannedSecret(ctx context.Context, client *cloudflareClient, accountI
 		return "", "", "", err
 	}
 	return desired.Name, "", secret.ID, nil
+}
+
+func failedSyncState(now string, err error, rule *syncRule, accountID, storeID string, plan *syncPlan, namesToIDs map[string]string, previous *syncState) *syncState {
+	state := &syncState{
+		LastRunAt:           now,
+		LastError:           err.Error(),
+		VaultMount:          rule.VaultMount,
+		VaultPath:           rule.VaultPath,
+		VaultField:          rule.VaultField,
+		VaultVersion:        plan.VaultVersion,
+		SourceSHA256:        plan.SourceSHA256,
+		CloudflareAccountID: accountID,
+		CloudflareStoreID:   storeID,
+		CloudflareNamesToID: map[string]string{},
+		Parts:               plan.Secrets[len(plan.Secrets)-1].Parts,
+	}
+	if previous != nil {
+		state.LastSuccessAt = previous.LastSuccessAt
+	}
+	for name, id := range namesToIDs {
+		state.CloudflareNamesToID[name] = id
+	}
+	return state
 }
 
 func (b *cloudflareBackend) pathSyncStatusRead(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {

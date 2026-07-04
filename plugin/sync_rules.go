@@ -18,6 +18,7 @@ type syncRule struct {
 	VaultPath      string   `json:"vault_path"`
 	VaultField     string   `json:"vault_field,omitempty"`
 	CloudflareName string   `json:"cloudflare_name"`
+	BindingName    string   `json:"binding_name,omitempty"`
 	AccountID      string   `json:"account_id,omitempty"`
 	SecretsStoreID string   `json:"secrets_store_id,omitempty"`
 	Scopes         []string `json:"scopes,omitempty"`
@@ -65,6 +66,10 @@ func (b *cloudflareBackend) pathSyncRules() *framework.Path {
 			"cloudflare_name": {
 				Type:        framework.TypeString,
 				Description: "Base Cloudflare Secrets Store secret name.",
+			},
+			"binding_name": {
+				Type:        framework.TypeString,
+				Description: "Optional Worker binding name prefix for Terraform binding metadata.",
 			},
 			"account_id": {
 				Type:        framework.TypeString,
@@ -120,6 +125,7 @@ func (b *cloudflareBackend) pathSyncRulesWrite(ctx context.Context, req *logical
 		VaultPath:      data.Get("vault_path").(string),
 		VaultField:     data.Get("vault_field").(string),
 		CloudflareName: data.Get("cloudflare_name").(string),
+		BindingName:    data.Get("binding_name").(string),
 		AccountID:      data.Get("account_id").(string),
 		SecretsStoreID: data.Get("secrets_store_id").(string),
 		Split:          strings.ToLower(data.Get("split").(string)),
@@ -216,6 +222,9 @@ func (r *syncRule) validate() error {
 	if strings.Contains(r.CloudflareName, " ") {
 		return errors.New("cloudflare_name must not contain spaces")
 	}
+	if r.BindingName != "" && !isValidWorkerBindingName(r.BindingName) {
+		return errors.New("binding_name must start with a letter or underscore and contain only letters, numbers, or underscores")
+	}
 	if r.Split != "auto" && r.Split != "true" && r.Split != "false" {
 		return fmt.Errorf("split must be one of auto, true, or false")
 	}
@@ -238,6 +247,7 @@ func (r *syncRule) toResponseData() map[string]interface{} {
 		"vault_path":       r.VaultPath,
 		"vault_field":      r.VaultField,
 		"cloudflare_name":  r.CloudflareName,
+		"binding_name":     r.BindingName,
 		"account_id":       r.AccountID,
 		"secrets_store_id": r.SecretsStoreID,
 		"scopes":           r.Scopes,

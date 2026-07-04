@@ -7,11 +7,15 @@ This project implements the MVP described in `SPEC.md`:
 - Configure Cloudflare bootstrap API access.
 - Configure default sync behavior.
 - Store explicit KV v2 to Cloudflare Secrets Store sync rules.
+- Generate Terraform-friendly Worker Secrets Store binding metadata for sync rules.
 - Run one sync rule or all enabled explicit sync rules.
 - Store sync status and delete recorded Cloudflare sync entries.
 - Store Cloudflare API token roles.
 - Issue leased Cloudflare account-owned API tokens.
+- Renew leased Cloudflare account-owned API tokens when roles allow renewal.
 - Revoke Cloudflare API tokens when Vault leases are revoked.
+- Roll Cloudflare API token values.
+- Store and retrieve named static Cloudflare API tokens.
 - Discover Cloudflare token permission groups.
 
 ## Build
@@ -120,6 +124,7 @@ vault write cloudflare/sync/rules/api-jwt \
   vault_path=apps/api/prod/jwt_private_key \
   vault_field=value \
   cloudflare_name=JWT_PRIVATE_KEY \
+  binding_name=JWT_PRIVATE_KEY \
   scopes="workers" \
   split=auto \
   encoding=raw \
@@ -180,6 +185,46 @@ vault write cloudflare/sync/reconcile dry_run=false delete_orphans=true
 
 Reconciliation reports missing Cloudflare entries, managed orphan entries, stale comments or versions, and chunk part drift.
 
+## Terraform Worker Bindings
+
+Terraform should bind Cloudflare Workers to Secrets Store entries by name and store ID while this plugin owns secret values.
+
+After creating a sync rule, trigger sync before deploying the Worker:
+
+```sh
+vault write cloudflare/sync/run/api-jwt
+```
+
+Read binding metadata for Terraform:
+
+```sh
+vault read cloudflare/sync/bindings/api-jwt
+```
+
+The response includes `bindings_json`, a JSON array of Cloudflare Worker binding objects:
+
+```json
+[
+  {
+    "name": "JWT_PRIVATE_KEY",
+    "type": "secrets_store_secret",
+    "store_id": "<store_id>",
+    "secret_name": "JWT_PRIVATE_KEY"
+  }
+]
+```
+
+For chunked secrets, the endpoint returns every required binding, including `*_META` and `*_PART_NNN` entries. The endpoint does not write Cloudflare and does not return secret values.
+
+The recommended Terraform workflow is:
+
+1. CI obtains a short-lived Cloudflare API token from `cloudflare/token/creds/<role>` and exports it as `CLOUDFLARE_API_TOKEN`.
+2. Terraform writes/updates `sync/rules/{name}`.
+3. Terraform triggers `sync/run/{name}`.
+4. Terraform reads `sync/bindings/{name}` and assigns `jsondecode(bindings_json)` to Worker `bindings`.
+
+See `examples/terraform/worker-secrets-store`.
+
 ## Chunked Secrets
 
 When chunking is enabled, parts are written before metadata:
@@ -225,7 +270,49 @@ vault write cloudflare/token/creds/worker-read display_name=ci ttl=30m
 
 The response includes the Cloudflare token value once. The plugin stores token ID, account ID, role name, issue time, and expiration only.
 
+If the role has `renewable=true`, Vault lease renewal updates the Cloudflare token expiration without returning a new token value. Renewal is capped by the role's `max_ttl`.
+
 When the Vault lease is revoked or expires, Vault calls the plugin revoke callback and the plugin deletes the Cloudflare token.
+
+Roll a managed token value and return the replacement value once:
+
+```sh
+vault write cloudflare/token/roll/<token_id>
+```
+
+## Static API Tokens
+
+Store an existing static Cloudflare API token:
+
+```sh
+vault write cloudflare/token/static/ci \
+  token="$CLOUDFLARE_STATIC_TOKEN" \
+  account_id="$CLOUDFLARE_ACCOUNT_ID" \
+  token_id="<optional_cloudflare_token_id>"
+```
+
+Create a static token once from a configured role and store the returned token value:
+
+```sh
+vault write cloudflare/token/static/ci \
+  role=worker-read \
+  display_name=ci \
+  ttl=4h
+```
+
+Read the stored token value:
+
+```sh
+vault read cloudflare/token/static/ci
+```
+
+Delete the Vault static token entry:
+
+```sh
+vault delete cloudflare/token/static/ci
+```
+
+Set `delete_cloudflare_token_on_delete=true` when writing the static entry if deleting the Vault entry should also delete the Cloudflare token.
 
 Reconcile issued token state with Cloudflare:
 
@@ -241,14 +328,13 @@ vault write cloudflare/token/reconcile dry_run=false delete_orphans=true
 ```
 
 Reconciliation reports active plugin-managed tokens without Vault state, expired managed tokens still present in Cloudflare, and Vault token state whose Cloudflare token is missing.
+Named static token entries with Cloudflare token IDs are also treated as valid plugin state during reconciliation.
 
 ## Deferred
 
 The following are still deferred from the MVP or not yet implemented:
 
 - KV metadata discovery scans.
-- Worker binding generation.
 - Automatic Worker deployment updates.
-- Token lease renewal.
 - Cloudflare user-owned token creation.
 - Root credential rotation automation.

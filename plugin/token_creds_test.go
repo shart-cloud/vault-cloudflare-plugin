@@ -124,6 +124,73 @@ func TestTokenCredsRejectTTLAboveMax(t *testing.T) {
 	}
 }
 
+func TestTokenCredsRenewUpdatesCloudflareToken(t *testing.T) {
+	var updateReq cloudflareAPITokenCreateRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			writeJSON(t, w, cloudflareEnvelope[cloudflareAPIToken]{Success: true, Result: cloudflareAPIToken{ID: "tok-1", Value: "cf-token-value"}})
+		case http.MethodPut:
+			if r.URL.Path != "/accounts/acct-1/tokens/tok-1" {
+				t.Fatalf("update path = %s", r.URL.Path)
+			}
+			if err := json.NewDecoder(r.Body).Decode(&updateReq); err != nil {
+				t.Fatal(err)
+			}
+			writeJSON(t, w, cloudflareEnvelope[cloudflareAPIToken]{Success: true, Result: cloudflareAPIToken{ID: "tok-1", ExpiresOn: updateReq.ExpiresOn}})
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	}))
+	defer server.Close()
+
+	b, storage := testBackend(t)
+	b.httpClient = server.Client()
+	ctx := context.Background()
+	writeCloudflareTestConfig(t, b, storage, server.URL)
+	writeTokenRoleWithRenewable(t, b, storage, true)
+
+	resp, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.UpdateOperation,
+		Path:      "token/creds/worker-read",
+		Storage:   storage,
+		Data: map[string]interface{}{
+			"display_name": "ci",
+			"ttl":          "30m",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp == nil || resp.Secret == nil || !resp.Secret.Renewable {
+		t.Fatalf("expected renewable secret, got %#v", resp)
+	}
+	resp.Secret.IssueTime = time.Now().UTC()
+	resp.Secret.Increment = time.Hour
+
+	renewed, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.RenewOperation,
+		Storage:   storage,
+		Secret:    resp.Secret,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renewed == nil || renewed.Secret == nil || renewed.Secret.TTL != time.Hour || !renewed.Secret.Renewable {
+		t.Fatalf("renewed secret = %#v", renewed)
+	}
+	if updateReq.Name == "" || updateReq.ExpiresOn == "" {
+		t.Fatalf("update request = %#v", updateReq)
+	}
+	state, err := readTokenState(ctx, storage, "tok-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state == nil || state.ExpiresOn != updateReq.ExpiresOn {
+		t.Fatalf("state = %#v, update = %#v", state, updateReq)
+	}
+}
+
 func TestDeleteAccountTokenTreatsNotFoundAsSuccess(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
@@ -160,6 +227,11 @@ func writeCloudflareTestConfig(t *testing.T, b *cloudflareBackend, storage logic
 
 func writeTokenRole(t *testing.T, b *cloudflareBackend, storage logical.Storage) {
 	t.Helper()
+	writeTokenRoleWithRenewable(t, b, storage, false)
+}
+
+func writeTokenRoleWithRenewable(t *testing.T, b *cloudflareBackend, storage logical.Storage, renewable bool) {
+	t.Helper()
 	resp, err := b.HandleRequest(context.Background(), &logical.Request{
 		Operation: logical.UpdateOperation,
 		Path:      "token/roles/worker-read",
@@ -172,6 +244,7 @@ func writeTokenRole(t *testing.T, b *cloudflareBackend, storage logical.Storage)
 			},
 			"default_ttl": "1h",
 			"max_ttl":     "4h",
+			"renewable":   renewable,
 			"enabled":     true,
 		},
 	})

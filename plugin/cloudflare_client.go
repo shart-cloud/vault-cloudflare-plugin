@@ -145,6 +145,24 @@ func (c *cloudflareClient) createAccountToken(ctx context.Context, accountID str
 	return out.Result, nil
 }
 
+func (c *cloudflareClient) updateAccountToken(ctx context.Context, accountID, tokenID string, request cloudflareAPITokenCreateRequest) (cloudflareAPIToken, error) {
+	path := fmt.Sprintf("/accounts/%s/tokens/%s", url.PathEscape(accountID), url.PathEscape(tokenID))
+	var out cloudflareEnvelope[cloudflareAPIToken]
+	if err := c.do(ctx, http.MethodPut, path, request, &out); err != nil {
+		return cloudflareAPIToken{}, err
+	}
+	return out.Result, nil
+}
+
+func (c *cloudflareClient) rollAccountTokenValue(ctx context.Context, accountID, tokenID string) (cloudflareAPIToken, error) {
+	path := fmt.Sprintf("/accounts/%s/tokens/%s/value", url.PathEscape(accountID), url.PathEscape(tokenID))
+	var out cloudflareEnvelope[cloudflareAPIToken]
+	if err := c.do(ctx, http.MethodPut, path, nil, &out); err != nil {
+		return cloudflareAPIToken{}, err
+	}
+	return out.Result, nil
+}
+
 func (c *cloudflareClient) listAccountTokens(ctx context.Context, accountID string) ([]cloudflareAPIToken, error) {
 	path := fmt.Sprintf("/accounts/%s/tokens", url.PathEscape(accountID))
 	var out cloudflareEnvelope[[]cloudflareAPIToken]

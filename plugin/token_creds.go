@@ -21,6 +21,7 @@ type tokenState struct {
 	RoleName  string `json:"role_name"`
 	AccountID string `json:"account_id"`
 	TokenID   string `json:"token_id"`
+	TokenName string `json:"token_name,omitempty"`
 	IssuedAt  string `json:"issued_at"`
 	ExpiresOn string `json:"expires_on"`
 }
@@ -34,6 +35,7 @@ func (b *cloudflareBackend) cloudflareTokenSecret() *framework.Secret {
 			"role_name":  {Type: framework.TypeString},
 			"expires_on": {Type: framework.TypeString},
 		},
+		Renew:  b.pathTokenCredsRenew,
 		Revoke: b.pathTokenCredsRevoke,
 	}
 }
@@ -94,8 +96,9 @@ func (b *cloudflareBackend) pathTokenCredsWrite(ctx context.Context, req *logica
 		return nil, err
 	}
 	expiresOn := now.Add(time.Duration(ttlSeconds) * time.Second).Format(time.RFC3339)
+	tokenName := renderTokenName(role.NameTemplate, roleName, data.Get("display_name").(string), now, randomSuffix)
 	request := cloudflareAPITokenCreateRequest{
-		Name:      renderTokenName(role.NameTemplate, roleName, data.Get("display_name").(string), now, randomSuffix),
+		Name:      tokenName,
 		Policies:  []cloudflareAPITokenPolicy{role.toCloudflarePolicy()},
 		ExpiresOn: expiresOn,
 	}
@@ -118,6 +121,7 @@ func (b *cloudflareBackend) pathTokenCredsWrite(ctx context.Context, req *logica
 		RoleName:  roleName,
 		AccountID: accountID,
 		TokenID:   token.ID,
+		TokenName: tokenName,
 		IssuedAt:  now.Format(time.RFC3339),
 		ExpiresOn: expiresOn,
 	}
@@ -134,14 +138,108 @@ func (b *cloudflareBackend) pathTokenCredsWrite(ctx context.Context, req *logica
 		"account_id": accountID,
 		"token_id":   token.ID,
 		"role_name":  roleName,
+		"token_name": tokenName,
 		"expires_on": expiresOn,
 	})
 	resp.Secret.TTL = time.Duration(ttlSeconds) * time.Second
 	resp.Secret.MaxTTL = time.Duration(role.MaxTTL) * time.Second
-	resp.Secret.Renewable = false
+	resp.Secret.Renewable = role.Renewable
 	if request.NotBefore != "" {
 		resp.Data["not_before"] = request.NotBefore
 	}
+	return resp, nil
+}
+
+func (b *cloudflareBackend) pathTokenCredsRenew(ctx context.Context, req *logical.Request, _ *framework.FieldData) (*logical.Response, error) {
+	if req.Secret == nil {
+		return nil, fmt.Errorf("missing secret metadata")
+	}
+	accountID, _ := req.Secret.InternalData["account_id"].(string)
+	tokenID, _ := req.Secret.InternalData["token_id"].(string)
+	roleName, _ := req.Secret.InternalData["role_name"].(string)
+	tokenName, _ := req.Secret.InternalData["token_name"].(string)
+	if accountID == "" || tokenID == "" || roleName == "" {
+		return nil, fmt.Errorf("missing account_id, token_id, or role_name in lease metadata")
+	}
+
+	role, err := readTokenRole(ctx, req.Storage, roleName)
+	if err != nil {
+		return nil, err
+	}
+	if role == nil {
+		return logical.ErrorResponse("token role %q not found", roleName), nil
+	}
+	if !role.Enabled {
+		return logical.ErrorResponse("token role %q is disabled", roleName), nil
+	}
+	if !role.Renewable {
+		return logical.ErrorResponse("token role %q is not renewable", roleName), nil
+	}
+	cfg, err := readCloudflareConfig(ctx, req.Storage)
+	if err != nil {
+		return nil, err
+	}
+	if cfg == nil || cfg.APIToken == "" {
+		return logical.ErrorResponse("config/cloudflare must be configured before renewing tokens"), nil
+	}
+	state, err := readTokenState(ctx, req.Storage, tokenID)
+	if err != nil {
+		return nil, err
+	}
+	if state != nil && state.TokenName != "" {
+		tokenName = state.TokenName
+	}
+	if tokenName == "" {
+		tokenName = "vault-" + roleName + "-" + tokenID
+	}
+
+	now := time.Now().UTC()
+	ttl := req.Secret.Increment
+	if ttl <= 0 {
+		ttl = time.Duration(role.DefaultTTL) * time.Second
+	}
+	if ttl > time.Duration(role.MaxTTL)*time.Second {
+		ttl = time.Duration(role.MaxTTL) * time.Second
+	}
+	if !req.Secret.IssueTime.IsZero() {
+		remaining := req.Secret.IssueTime.Add(time.Duration(role.MaxTTL) * time.Second).Sub(now)
+		if remaining <= 0 {
+			return logical.ErrorResponse("lease has reached role max_ttl"), nil
+		}
+		if ttl > remaining {
+			ttl = remaining
+		}
+	}
+
+	expiresOn := now.Add(ttl).Format(time.RFC3339)
+	request := cloudflareAPITokenCreateRequest{
+		Name:      tokenName,
+		Policies:  []cloudflareAPITokenPolicy{role.toCloudflarePolicy()},
+		ExpiresOn: expiresOn,
+	}
+	if role.NotBeforeOffset > 0 {
+		request.NotBefore = now.Add(time.Duration(role.NotBeforeOffset) * time.Second).Format(time.RFC3339)
+	}
+	if len(role.IPAllowlist) > 0 || len(role.IPDenylist) > 0 {
+		request.Condition = &cloudflareAPITokenCondition{RequestIP: &cloudflareAPITokenIPCondition{In: role.IPAllowlist, NotIn: role.IPDenylist}}
+	}
+	if _, err := newCloudflareClient(cfg, b.httpClient).updateAccountToken(ctx, accountID, tokenID, request); err != nil {
+		return nil, err
+	}
+
+	if state == nil {
+		state = &tokenState{RoleName: roleName, AccountID: accountID, TokenID: tokenID, TokenName: tokenName}
+	}
+	state.ExpiresOn = expiresOn
+	if err := writeTokenState(ctx, req.Storage, tokenID, state); err != nil {
+		return nil, err
+	}
+
+	resp := &logical.Response{Secret: req.Secret}
+	resp.Secret.TTL = ttl
+	resp.Secret.MaxTTL = time.Duration(role.MaxTTL) * time.Second
+	resp.Secret.Renewable = true
+	resp.Secret.InternalData["expires_on"] = expiresOn
 	return resp, nil
 }
 

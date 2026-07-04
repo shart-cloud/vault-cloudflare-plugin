@@ -54,11 +54,15 @@ func (b *cloudflareBackend) pathTokenReconcileWrite(ctx context.Context, req *lo
 	if err != nil {
 		return nil, err
 	}
+	staticTokens, err := readAllStaticTokens(ctx, req.Storage)
+	if err != nil {
+		return nil, err
+	}
 	roles, err := readAllTokenRoles(ctx, req.Storage)
 	if err != nil {
 		return nil, err
 	}
-	accountIDs := tokenReconcileAccountIDs(cfg, states, roles)
+	accountIDs := tokenReconcileAccountIDs(cfg, states, roles, staticTokens)
 	client := newCloudflareClient(cfg, b.httpClient)
 
 	orphaned := []map[string]interface{}{}
@@ -76,7 +80,9 @@ func (b *cloudflareBackend) pathTokenReconcileWrite(ctx context.Context, req *lo
 		byID := make(map[string]cloudflareAPIToken, len(tokens))
 		for _, token := range tokens {
 			byID[token.ID] = token
-			_, hasState := states[token.ID]
+			_, hasLeaseState := states[token.ID]
+			_, hasStaticState := staticTokens[token.ID]
+			hasState := hasLeaseState || hasStaticState
 			expiredToken := tokenExpired(token.ExpiresOn, now)
 			managed := hasState || isManagedCloudflareToken(token)
 			if managed && expiredToken {
@@ -102,6 +108,14 @@ func (b *cloudflareBackend) pathTokenReconcileWrite(ctx context.Context, req *lo
 		}
 		if _, ok := remoteByAccount[state.AccountID][tokenID]; !ok {
 			missing = append(missing, map[string]interface{}{"token_id": tokenID, "role": state.RoleName, "account_id": state.AccountID})
+		}
+	}
+	for tokenID, token := range staticTokens {
+		if token.AccountID == "" || token.TokenID == "" {
+			continue
+		}
+		if _, ok := remoteByAccount[token.AccountID][tokenID]; !ok {
+			missing = append(missing, map[string]interface{}{"token_id": tokenID, "role": "static:" + token.Name, "account_id": token.AccountID})
 		}
 	}
 
@@ -151,7 +165,7 @@ func readAllTokenRoles(ctx context.Context, storage logical.Storage) ([]*tokenRo
 	return roles, nil
 }
 
-func tokenReconcileAccountIDs(cfg *cloudflareConfig, states map[string]*tokenState, roles []*tokenRole) []string {
+func tokenReconcileAccountIDs(cfg *cloudflareConfig, states map[string]*tokenState, roles []*tokenRole, staticTokens map[string]*staticToken) []string {
 	seen := map[string]struct{}{}
 	if cfg.AccountID != "" {
 		seen[cfg.AccountID] = struct{}{}
@@ -164,6 +178,11 @@ func tokenReconcileAccountIDs(cfg *cloudflareConfig, states map[string]*tokenSta
 	for _, role := range roles {
 		if role.AccountID != "" {
 			seen[role.AccountID] = struct{}{}
+		}
+	}
+	for _, token := range staticTokens {
+		if token.AccountID != "" && token.TokenID != "" {
+			seen[token.AccountID] = struct{}{}
 		}
 	}
 	ids := make([]string, 0, len(seen))

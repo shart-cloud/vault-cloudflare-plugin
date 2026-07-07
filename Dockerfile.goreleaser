@@ -1,8 +1,10 @@
-FROM gcr.io/distroless/static-debian12:nonroot
+# Layer the Cloudflare secrets plugin on top of the shart-cloud Vault image
+# (which already carries the OpenRouter plugin), producing a single Vault
+# image that ships both plugins in /vault/plugins. Inherits the base image's
+# vault entrypoint — do not override it.
+FROM ghcr.io/shart-cloud/vault-openrouter:v0.1.2
 
 ARG TARGETOS
 ARG TARGETARCH
 
-COPY ${TARGETOS}/${TARGETARCH}/vault-plugin-secrets-cloudflare /usr/local/bin/vault-plugin-secrets-cloudflare
-
-ENTRYPOINT ["/usr/local/bin/vault-plugin-secrets-cloudflare"]
+COPY --chown=100:1000 --chmod=0755 ${TARGETOS}/${TARGETARCH}/vault-plugin-secrets-cloudflare /vault/plugins/vault-plugin-secrets-cloudflare

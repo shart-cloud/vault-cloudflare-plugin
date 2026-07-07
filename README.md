@@ -45,7 +45,7 @@ ghcr.io/<owner>/<repo>:v0.1
 ghcr.io/<owner>/<repo>:latest
 ```
 
-GoReleaser uses `Dockerfile.goreleaser`, which expects the prebuilt plugin binary in the release build context and packages it in a distroless runtime image.
+GoReleaser uses `Dockerfile.goreleaser`, which layers the prebuilt plugin binary onto the shart-cloud Vault image (`ghcr.io/shart-cloud/vault-openrouter`) at `/vault/plugins`. The published image is therefore a full Vault image shipping both the OpenRouter and Cloudflare secrets plugins, suitable for use directly as the Vault server image.
 
 ## Vault Registration
 

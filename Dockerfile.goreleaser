@@ -2,7 +2,7 @@
 # (which already carries the OpenRouter plugin), producing a single Vault
 # image that ships both plugins in /vault/plugins. Inherits the base image's
 # vault entrypoint — do not override it.
-FROM ghcr.io/shart-cloud/vault-openrouter:v0.1.2
+FROM ghcr.io/shart-cloud/vault-openrouter:v0.1.3
 
 ARG TARGETOS
 ARG TARGETARCH

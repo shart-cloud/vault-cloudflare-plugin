@@ -49,3 +49,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REGISTRY_IMAGE: ${{ env.REGISTRY_IMAGE }}
+
+      - name: Verify published Vault and both plugins
+        env:
+          VAULT_IMAGE: ${{ env.REGISTRY_IMAGE }}:${{ github.ref_name }}
+        run: bash scripts/smoke-vault-image.sh
